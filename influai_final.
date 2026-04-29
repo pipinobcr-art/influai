@@ -1,0 +1,1498 @@
+'use client'
+import { useState, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
+
+interface Config {
+  name: string
+  handle: string
+  niche: string
+  tone: string
+  bio: string
+  apiKey: string
+  platforms: string[]
+}
+
+interface Message {
+  id: number
+  sender: string
+  platform: string
+  text: string
+  time: string
+  unread: boolean
+  category?: string
+  priority?: string
+  aiReply?: string
+  status: 'pending' | 'replied' | 'ignored'
+}
+
+const DEMO_MESSAGES: Message[] = [
+  { id: 1, sender: 'marie_c', platform: 'Instagram', text: 'Bonjour ! Je t\'adore tellement !! Tu peux me dire quelle crème tu utilises ? Ça fait des semaines que je cherche 😍', time: '2min', unread: true, status: 'pending' },
+  { id: 2, sender: 'fitness_coach_max', platform: 'TikTok', text: 'Incroyable cette vidéo ! Est-ce que tu fais des coachings en ligne ? Je voudrais apprendre ta méthode', time: '7min', unread: true, status: 'pending' },
+  { id: 3, sender: 'brand_lumiere', platform: 'Instagram', text: 'Bonjour ! Nous représentons la marque Lumière et aimerions vous proposer une collaboration rémunérée pour notre nouvelle collection. Budget disponible 2000€. Vous êtes disponible pour un call ?', time: '15min', unread: true, status: 'pending', category: 'collaboration', priority: 'high' },
+  { id: 4, sender: 'julia_fan2024', platform: 'YouTube', text: 'Cette vidéo m\'a tellement motivée, je l\'ai regardée 3 fois ! Merci pour tout ce que tu fais, tu changes des vies vraiment ❤️', time: '32min', unread: false, status: 'pending' },
+  { id: 5, sender: 'thomas_b', platform: 'TikTok', text: 'Bonne vidéo mais t\'as pas sourcé tes infos là... un peu décevant pour quelqu\'un qui se dit expert', time: '1h', unread: false, status: 'pending' },
+  { id: 6, sender: 'pr_agence_presse', platform: 'Instagram', text: 'Bonjour, nous sommes l\'agence RP de plusieurs grandes marques. Nous cherchons des visages pour une campagne nationale. Votre profil nous intéresse fortement.', time: '2h', unread: false, status: 'pending', category: 'media_press', priority: 'high' },
+  { id: 7, sender: 'lea_style', platform: 'Instagram', text: 'Tu peux faire un haul mode pour le printemps ? J\'adore quand tu fais ça 🌸', time: '3h', unread: false, status: 'pending' },
+]
+
+type TabType = 'inbox' | 'generate' | 'auto' | 'stats'
+
+export default function Dashboard() {
+  const router = useRouter()
+  const [config, setConfig] = useState<Config | null>(null)
+  const [messages, setMessages] = useState<Message[]>(DEMO_MESSAGES)
+  const [selectedMsg, setSelectedMsg] = useState<Message | null>(null)
+  const [tab, setTab] = useState<TabType>('inbox')
+  const [replyText, setReplyText] = useState('')
+  const [tone, setTone] = useState('chaleureux')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [analyzing, setAnalyzing] = useState<number | null>(null)
+
+  // Content generator
+  const [genPlatform, setGenPlatform] = useState('Instagram')
+  const [genType, setGenType] = useState('Post avec légende')
+  const [genIdea, setGenIdea] = useState('')
+  const [genStyle, setGenStyle] = useState('Authentique & personnel')
+  const [genResult, setGenResult] = useState('')
+  const [genLoading, setGenLoading] = useState(false)
+
+  // Auto rules
+  const [rules, setRules] = useState({ auto_reply_common: true, reply_positive: true, filter_spam: true, schedule: false, alert_collab: true })
+
+  useEffect(() => {
+    const saved = localStorage.getItem('influai_config')
+    if (!saved) { router.push('/setup'); return }
+    setConfig(JSON.parse(saved))
+  }, [router])
+
+  const callAgent = useCallback(async (action: string, extra: Record<string, unknown> = {}) => {
+    const res = await fetch('/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, action, ...extra })
+    })
+    const data = await res.json()
+    if (data.error) throw new Error(data.error)
+    return data.result as string
+  }, [config])
+
+  async function analyzeMessage(msg: Message) {
+    if (msg.category || analyzing === msg.id) return
+    setAnalyzing(msg.id)
+    try {
+      const raw = await callAgent('analyze_message', { message: msg.text, sender: msg.sender, platform: msg.platform })
+      let result: { category?: string; priority?: string } = {}
+      try { result = JSON.parse(raw) } catch { result = { category: 'other', priority: 'medium' } }
+      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, category: result.category, priority: result.priority } : m))
+      setSelectedMsg(prev => prev?.id === msg.id ? { ...prev, category: result.category, priority: result.priority } : prev)
+    } catch { /* silent */ }
+    setAnalyzing(null)
+  }
+
+  async function generateReply() {
+    if (!selectedMsg || !config) return
+    setAiLoading(true)
+    try {
+      const result = await callAgent('reply', {
+        message: selectedMsg.text,
+        sender: selectedMsg.sender,
+        platform: selectedMsg.platform,
+        tone
+      })
+      setReplyText(result)
+    } catch (e) {
+      setReplyText('Erreur: ' + (e as Error).message)
+    }
+    setAiLoading(false)
+  }
+
+  async function generateContent() {
+    if (!genIdea || !config) return
+    setGenLoading(true)
+    setGenResult('')
+    try {
+      const result = await callAgent('generate_content', {
+        contentType: genType,
+        platform: genPlatform,
+        idea: genIdea,
+        style: genStyle
+      })
+      setGenResult(result)
+    } catch (e) {
+      setGenResult('Erreur: ' + (e as Error).message)
+    }
+    setGenLoading(false)
+  }
+
+  function sendReply() {
+    if (!replyText || !selectedMsg) return
+    setMessages(prev => prev.map(m => m.id === selectedMsg.id ? { ...m, status: 'replied', unread: false, aiReply: replyText } : m))
+    setSelectedMsg(null)
+    setReplyText('')
+  }
+
+  function selectMsg(msg: Message) {
+    setSelectedMsg(msg)
+    setReplyText('')
+    setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, unread: false } : m))
+    analyzeMessage(msg)
+  }
+
+  function ignoreMsg(id: number) {
+    setMessages(prev => prev.map(m => m.id === id ? { ...m, status: 'ignored' } : m))
+    if (selectedMsg?.id === id) setSelectedMsg(null)
+  }
+
+  if (!config) return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--text2)', fontSize: '14px' }}>
+      Chargement de votre IA...
+    </div>
+  )
+
+  const unreadCount = messages.filter(m => m.unread).length
+  const pendingCount = messages.filter(m => m.status === 'pending').length
+
+  const inp: React.CSSProperties = { width: '100%', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px 12px', fontSize: '13px', color: 'var(--text)', outline: 'none', fontFamily: 'inherit' }
+  const btnPurple: React.CSSProperties = { background: 'var(--purple)', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 18px', fontSize: '13px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' }
+  const btnGhost: React.CSSProperties = { background: 'transparent', color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px 18px', fontSize: '13px', cursor: 'pointer', fontFamily: 'inherit' }
+
+  const catColors: Record<string, string> = { collaboration: 'var(--yellow)', media_press: 'var(--yellow)', spam: 'var(--red)', fan_positive: 'var(--green)', complaint: 'var(--red)', dm_question: 'var(--purple2)', other: 'var(--text3)' }
+  const catLabels: Record<string, string> = { collaboration: '🤝 Colla', media_press: '📰 Presse', spam: '🚫 Spam', fan_positive: '❤️ Fan', complaint: '⚠️ Plainte', dm_question: '❓ Question', other: '💬 Autre' }
+
+  return (
+    <div style={{ display: 'flex', height: '100vh', background: 'var(--bg)', overflow: 'hidden' }}>
+      {/* Sidebar */}
+      <aside style={{ width: '220px', background: 'var(--bg2)', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', padding: '16px 0', flexShrink: 0 }}>
+        <div style={{ padding: '0 16px 20px', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <span style={{ width: '8px', height: '8px', background: 'var(--purple)', borderRadius: '50%' }} />
+            <span style={{ fontSize: '14px', fontWeight: 600 }}>InfluAI</span>
+          </div>
+          <div style={{ fontSize: '12px', color: 'var(--text2)' }}>{config.name}</div>
+          <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>{config.handle}</div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', marginTop: '8px', background: 'var(--green-bg)', border: '1px solid rgba(52,211,153,0.2)', borderRadius: '10px', padding: '3px 8px', fontSize: '11px', color: 'var(--green)' }}>
+            <span style={{ width: '5px', height: '5px', background: 'var(--green)', borderRadius: '50%' }} />
+            IA active
+          </div>
+        </div>
+
+        <nav style={{ flex: 1, padding: '12px 8px' }}>
+          {([
+            { key: 'inbox', icon: '✉', label: 'Messages', badge: unreadCount },
+            { key: 'generate', icon: '✦', label: 'Créer contenu', badge: 0 },
+            { key: 'auto', icon: '⚙', label: 'Automatisation', badge: 0 },
+            { key: 'stats', icon: '◈', label: 'Statistiques', badge: 0 },
+          ] as {key: TabType, icon: string, label: string, badge: number}[]).map(item => (
+            <button
+              key={item.key}
+              onClick={() => setTab(item.key)}
+              style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%', padding: '9px 10px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '13px', fontFamily: 'inherit', background: tab === item.key ? 'var(--bg3)' : 'transparent', color: tab === item.key ? 'var(--text)' : 'var(--text2)', fontWeight: tab === item.key ? 500 : 400, marginBottom: '2px', textAlign: 'left' }}
+            >
+              <span style={{ width: '16px', textAlign: 'center' }}>{item.icon}</span>
+              <span style={{ flex: 1 }}>{item.label}</span>
+              {item.badge > 0 && <span style={{ background: 'var(--purple)', color: 'white', fontSize: '10px', padding: '2px 6px', borderRadius: '10px' }}>{item.badge}</span>}
+            </button>
+          ))}
+        </nav>
+
+        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>
+          <button onClick={() => { localStorage.removeItem('influai_config'); router.push('/setup') }} style={{ ...btnGhost, width: '100%', fontSize: '12px', padding: '8px' }}>⚙ Paramètres</button>
+        </div>
+      </aside>
+
+      {/* Main content */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+        {/* Top bar */}
+        <header style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg2)', flexShrink: 0 }}>
+          <div>
+            <div style={{ fontSize: '15px', fontWeight: 600 }}>
+              {tab === 'inbox' && 'Boîte de réception'}
+              {tab === 'generate' && 'Créateur de contenu IA'}
+              {tab === 'auto' && 'Règles d\'automatisation'}
+              {tab === 'stats' && 'Statistiques'}
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text2)', marginTop: '1px' }}>
+              {tab === 'inbox' && `${pendingCount} messages en attente`}
+              {tab === 'generate' && 'Générez du contenu pour tous vos réseaux'}
+              {tab === 'auto' && 'Configurez ce que l\'IA fait automatiquement'}
+              {tab === 'stats' && 'Performance de votre agent IA'}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--purple-bg)', border: '1px solid var(--purple-border)', borderRadius: '20px', padding: '6px 12px', fontSize: '12px', color: 'var(--purple2)' }}>
+            ✦ Propulsé par Claude
+          </div>
+        </header>
+
+        {/* INBOX TAB */}
+        {tab === 'inbox' && (
+          <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+            {/* Message list */}
+            <div style={{ width: '340px', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
+                {messages.filter(m => m.status !== 'ignored').map(msg => (
+                  <div
+                    key={msg.id}
+                    onClick={() => selectMsg(msg)}
+                    style={{
+                      padding: '12px', borderRadius: '10px', cursor: 'pointer', marginBottom: '6px',
+                      background: selectedMsg?.id === msg.id ? 'var(--bg3)' : 'transparent',
+                      border: selectedMsg?.id === msg.id ? '1px solid var(--border2)' : '1px solid transparent',
+                      transition: 'all 0.1s',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px' }}>
+                      {msg.unread && <span style={{ width: '6px', height: '6px', background: 'var(--purple)', borderRadius: '50%', flexShrink: 0 }} />}
+                      <span style={{ fontSize: '12px', fontWeight: 500 }}>{msg.sender}</span>
+                      <span style={{ fontSize: '10px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '4px', padding: '1px 6px', color: 'var(--text2)', marginLeft: 'auto' }}>{msg.platform}</span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text2)', lineHeight: 1.5, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                      {msg.text}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '6px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{msg.time}</span>
+                      {msg.status === 'replied' && <span style={{ fontSize: '10px', color: 'var(--green)' }}>✓ Répondu</span>}
+                      {msg.category && <span style={{ fontSize: '10px', color: catColors[msg.category] }}>{catLabels[msg.category]}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Message detail + reply */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {selectedMsg ? (
+                <>
+                  <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+                    {/* Message header */}
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px', marginBottom: '20px' }}>
+                      <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'var(--purple-bg)', border: '1px solid var(--purple-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 600, color: 'var(--purple2)', flexShrink: 0 }}>
+                        {selectedMsg.sender[0].toUpperCase()}
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 500 }}>@{selectedMsg.sender}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--text2)', marginTop: '2px' }}>{selectedMsg.platform} · {selectedMsg.time}</div>
+                        {analyzing === selectedMsg.id && <div style={{ fontSize: '11px', color: 'var(--purple2)', marginTop: '4px' }}>✦ Analyse IA en cours...</div>}
+                        {selectedMsg.category && (
+                          <div style={{ marginTop: '6px', display: 'flex', gap: '6px' }}>
+                            <span style={{ fontSize: '11px', background: 'var(--bg3)', border: `1px solid var(--border)`, borderRadius: '6px', padding: '3px 8px', color: catColors[selectedMsg.category] }}>{catLabels[selectedMsg.category]}</span>
+                            {selectedMsg.priority === 'high' && <span style={{ fontSize: '11px', background: 'var(--yellow-bg)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: '6px', padding: '3px 8px', color: 'var(--yellow)' }}>⚡ Prioritaire</span>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '12px 12px 12px 4px', padding: '16px', marginBottom: '24px', fontSize: '14px', lineHeight: 1.7 }}>
+                      {selectedMsg.text}
+                    </div>
+
+                    {/* Reply area */}
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '13px', color: 'var(--text2)' }}>Votre réponse</span>
+                        <select value={tone} onChange={e => setTone(e.target.value)} style={{ ...inp, width: 'auto', padding: '6px 10px', fontSize: '12px' }}>
+                          <option value="chaleureux">Ton chaleureux</option>
+                          <option value="professionnel">Professionnel</option>
+                          <option value="fun">Fun & décontracté</option>
+                          <option value="bref">Bref & direct</option>
+                        </select>
+                      </div>
+                      <textarea
+                        style={{ ...inp, height: '110px', resize: 'none', lineHeight: 1.6 }}
+                        value={replyText}
+                        onChange={e => setReplyText(e.target.value)}
+                        placeholder="Écrivez votre réponse ou générez-en une avec l'IA..."
+                      />
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                        <button style={btnPurple} onClick={generateReply} disabled={aiLoading}>
+                          {aiLoading ? (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ width: '12px', height: '12px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} />
+                              Génération...
+                            </span>
+                          ) : '✦ Générer avec l\'IA'}
+                        </button>
+                        <button style={btnPurple} onClick={sendReply} disabled={!replyText}>Envoyer ↗</button>
+                        <button style={btnGhost} onClick={() => ignoreMsg(selectedMsg.id)}>Ignorer</button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '12px', color: 'var(--text3)' }}>
+                  <span style={{ fontSize: '32px' }}>✉</span>
+                  <span style={{ fontSize: '14px' }}>Sélectionnez un message pour y répondre</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* GENERATE TAB */}
+        {tab === 'generate' && (
+          <div style={{ flex: 1, overflowY: 'auto', padding: '24px', maxWidth: '680px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text2)', display: 'block', marginBottom: '8px' }}>Plateforme</label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {['Instagram', 'TikTok', 'YouTube'].map(p => (
+                    <button key={p} onClick={() => setGenPlatform(p)} style={{ padding: '8px 16px', borderRadius: '20px', fontSize: '13px', cursor: 'pointer', border: genPlatform === p ? '1px solid var(--purple)' : '1px solid var(--border)', background: genPlatform === p ? 'var(--purple-bg)' : 'transparent', color: genPlatform === p ? 'var(--purple2)' : 'var(--text2)', fontFamily: 'inherit' }}>{p}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text2)', display: 'block', marginBottom: '8px' }}>Type de contenu</label>
+                <select value={genType} onChange={e => setGenType(e.target.value)} style={inp}>
+                  <option>Post avec légende</option>
+                  <option>Story engageante</option>
+                  <option>Reel / Short description + hook</option>
+                  <option>Annonce collaboration</option>
+                  <option>Contenu sponsorisé</option>
+                  <option>Réponse aux commentaires fréquents</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text2)', display: 'block', marginBottom: '8px' }}>Votre idée</label>
+                <textarea style={{ ...inp, height: '80px', resize: 'none', lineHeight: 1.6 }} value={genIdea} onChange={e => setGenIdea(e.target.value)} placeholder="Ex: Partager ma routine matinale, annoncer une collab avec Zara, montrer mes coulisses..." />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text2)', display: 'block', marginBottom: '8px' }}>Style de voix</label>
+                <select value={genStyle} onChange={e => setGenStyle(e.target.value)} style={inp}>
+                  <option>Authentique & personnel</option>
+                  <option>Inspirant & motivant</option>
+                  <option>Fun & humoristique</option>
+                  <option>Expert & éducatif</option>
+                  <option>Lifestyle & aspirationnel</option>
+                </select>
+              </div>
+
+              <button style={btnPurple} onClick={generateContent} disabled={!genIdea || genLoading}>
+                {genLoading ? '✦ Génération en cours...' : '✦ Générer le contenu'}
+              </button>
+
+              {genResult && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <label style={{ fontSize: '12px', color: 'var(--text2)' }}>Contenu généré</label>
+                    <button onClick={() => navigator.clipboard.writeText(genResult)} style={{ ...btnGhost, fontSize: '11px', padding: '5px 10px' }}>⎘ Copier</button>
+                  </div>
+                  <div style={{ background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '10px', padding: '16px', fontSize: '13px', lineHeight: 1.8, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {genResult}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <button style={btnPurple} onClick={generateContent}>↻ Regénérer</button>
+                    <button style={{ ...btnGhost, color: 'var(--green)', borderColor: 'rgba(52,211,153,0.3)' }}>📅 Planifier la publication</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* AUTO TAB */}
+        {tab === 'auto' && (
+          <div style={{ flex: 1, overflowY: 'auto', padding: '24px', maxWidth: '600px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {[
+                { key: 'auto_reply_common', icon: '✉', title: 'Réponses automatiques aux questions fréquentes', desc: 'L\'IA répond aux DMs courants sans votre intervention' },
+                { key: 'reply_positive', icon: '❤', title: 'Répondre aux commentaires positifs', desc: 'Remerciements et encouragements automatiques' },
+                { key: 'filter_spam', icon: '🚫', title: 'Filtrer et ignorer les spams', desc: 'Détection et suppression des messages non pertinents' },
+                { key: 'alert_collab', icon: '⚡', title: 'Alertes pour les opportunités importantes', desc: 'Collaborations, presse, partenariats — notification immédiate' },
+                { key: 'schedule', icon: '📅', title: 'Publication automatique planifiée', desc: 'Poster aux meilleures heures d\'engagement' },
+              ].map(rule => (
+                <div key={rule.key} style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '10px' }}>
+                  <span style={{ fontSize: '20px', width: '24px', textAlign: 'center' }}>{rule.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '14px', fontWeight: 500 }}>{rule.title}</div>
+                    <div style={{ fontSize: '12px', color: 'var(--text2)', marginTop: '2px' }}>{rule.desc}</div>
+                  </div>
+                  <button
+                    onClick={() => setRules(prev => ({ ...prev, [rule.key]: !prev[rule.key as keyof typeof rules] }))}
+                    style={{ width: '40px', height: '22px', borderRadius: '11px', border: 'none', cursor: 'pointer', transition: 'background 0.2s', background: rules[rule.key as keyof typeof rules] ? 'var(--purple)' : 'var(--bg3)', position: 'relative', flexShrink: 0 }}
+                  >
+                    <span style={{ position: 'absolute', top: '3px', width: '16px', height: '16px', background: 'white', borderRadius: '50%', transition: 'left 0.2s', left: rules[rule.key as keyof typeof rules] ? '21px' : '3px' }} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: '20px', padding: '16px', background: 'var(--purple-bg)', border: '1px solid var(--purple-border)', borderRadius: '10px', fontSize: '13px', color: 'var(--text2)', lineHeight: 1.7 }}>
+              ✦ <strong style={{ color: 'var(--purple2)' }}>L&apos;IA apprend votre style.</strong> Plus vous validez ou corrigez ses réponses, plus elle vous ressemble. Après 50 interactions, elle atteint 95% de précision.
+            </div>
+          </div>
+        )}
+
+        {/* STATS TAB */}
+        {tab === 'stats' && (
+          <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '24px' }}>
+              {[
+                { val: messages.filter(m => m.status === 'replied').length, label: 'Réponses envoyées', sub: 'Cette session', color: 'var(--purple2)' },
+                { val: pendingCount, label: 'En attente', sub: 'À traiter', color: 'var(--yellow)' },
+                { val: '94%', label: 'Satisfaction estimée', sub: '+2% ce mois', color: 'var(--green)' },
+                { val: '11h', label: 'Temps économisé', sub: 'Cette semaine', color: 'var(--text2)' },
+              ].map(s => (
+                <div key={s.label} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '10px', padding: '16px' }}>
+                  <div style={{ fontSize: '28px', fontWeight: 600, color: s.color }}>{s.val}</div>
+                  <div style={{ fontSize: '13px', fontWeight: 500, marginTop: '4px' }}>{s.label}</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>{s.sub}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '12px', color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Répartition par réseau</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '24px' }}>
+              {[
+                { name: 'Instagram', count: 7, color: '#E1306C' },
+                { name: 'TikTok', count: 3, color: '#ff0050' },
+                { name: 'YouTube', count: 2, color: '#FF0000' },
+              ].map(p => (
+                <div key={p.name} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '10px', padding: '14px' }}>
+                  <div style={{ fontSize: '20px', fontWeight: 600 }}>{p.count}</div>
+                  <div style={{ fontSize: '13px', color: p.color, marginTop: '2px' }}>{p.name}</div>
+                  <div style={{ height: '3px', background: 'var(--border)', borderRadius: '2px', marginTop: '8px', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${(p.count/12)*100}%`, background: p.color, borderRadius: '2px' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}import { NextRequest, NextResponse } from 'next/server'
+import Anthropic from '@anthropic-ai/sdk'
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json()
+    const { message, sender, platform, config, action } = body
+
+    if (!config?.apiKey) {
+      return NextResponse.json({ error: 'Clé API manquante' }, { status: 400 })
+    }
+
+    const client = new Anthropic({ apiKey: config.apiKey })
+
+    let prompt = ''
+
+    if (action === 'reply') {
+      prompt = `Tu es le manager IA de ${config.name}, un(e) influenceur(se) ${config.niche} avec un style de communication "${config.tone}".
+
+Description de ${config.name} : ${config.bio || 'Influenceur lifestyle'}
+
+Tu dois écrire une réponse personnelle et authentique au message suivant reçu sur ${platform} de @${sender} :
+
+"${message}"
+
+RÈGLES STRICTES :
+- Écris comme si tu ÉTAIS ${config.name}, pas comme un assistant
+- Ton : ${config.tone}
+- Maximum 3-4 phrases, naturel, humain
+- Adapte au contexte ${platform} (DM = intime, commentaire = public)
+- Pas de guillemets, pas d'introduction, juste la réponse
+- Si c'est une demande de colla/partenariat : sois chaleureux mais dis de contacter via l'email pro
+- Si c'est une question sur un produit/lien : propose d'aller voir la bio
+- Ajoute 1-2 emojis si approprié
+
+Réponds directement :`
+
+    } else if (action === 'generate_content') {
+      const { contentType, platform: plt, idea, style } = body
+      prompt = `Tu es le créateur de contenu IA de ${config.name}, influenceur(se) ${config.niche}.
+
+Style de voix : ${style || config.tone}
+Plateforme : ${plt}
+Type de contenu : ${contentType}
+Idée de base : ${idea}
+
+Génère le contenu complet, prêt à poster. Adapte le format à ${plt} :
+- Instagram : légende 150-250 mots + 5-8 hashtags pertinents
+- TikTok : description courte 50-100 mots + 3-5 hashtags + hook de début de vidéo suggéré
+- YouTube : description 200-350 mots + titre accrocheur suggéré + tags
+
+Style : ${config.name} parle à la première personne, ton ${config.tone}, authentique.
+Commence directement par le contenu, sans introduction.`
+
+    } else if (action === 'analyze_message') {
+      prompt = `Analyse ce message reçu sur ${platform} et catégorise-le.
+
+Message de @${sender} : "${message}"
+
+Réponds UNIQUEMENT en JSON sans markdown, sans backticks :
+{"category":"dm_question|collaboration|spam|fan_positive|complaint|media_press|other","priority":"high|medium|low","requiresManualReview":true|false,"reason":"courte explication","suggestedAction":"reply_auto|reply_manual|ignore|alert_influencer"}`
+    }
+
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: prompt }]
+    })
+
+    const text = response.content[0].type === 'text' ? response.content[0].text : ''
+    return NextResponse.json({ result: text })
+
+  } catch (err: unknown) {
+    const error = err as Error
+    return NextResponse.json({ error: error.message || 'Erreur serveur' }, { status: 500 })
+  }
+}
+
+      </div>
+
+      <style>{`@keyframe'use client'
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+
+const platforms = [
+  { id: 'instagram', label: 'Instagram', color: '#E1306C', icon: '📸', desc: 'DMs, commentaires, stories' },
+  { id: 'tiktok', label: 'TikTok', color: '#ff0050', icon: '🎵', desc: 'Commentaires, DMs, duos' },
+  { id: 'youtube', label: 'YouTube', color: '#FF0000', icon: '▶', desc: 'Commentaires, membres, DMs' },
+]
+
+const tones = ['Chaleureux & proche', 'Professionnel', 'Fun & décalé', 'Inspirant', 'Expert', 'Décontracté']
+
+export default function Setup() {
+  const router = useRouter()
+  const [step, setStep] = useState(1)
+  const [name, setName] = useState('')
+  const [handle, setHandle] = useState('')
+  const [niche, setNiche] = useState('')
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([])
+  const [selectedTone, setSelectedTone] = useState('')
+  const [bio, setBio] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  function togglePlatform(id: string) {
+    setSelectedPlatforms(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id])
+  }
+
+  async function finish() {
+    setSaving(true)
+    const config = { name, handle, niche, platforms: selectedPlatforms, tone: selectedTone, bio, apiKey }
+    localStorage.setItem('influai_config', JSON.stringify(config))
+    await new Promise(r => setTimeout(r, 800))
+    router.push('/dashboard')
+  }
+
+  const cardStyle = {
+    background: 'var(--bg2)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius)',
+    padding: '32px',
+    maxWidth: '560px',
+    width: '100%',
+  }
+
+  const inputStyle = {
+    width: '100%',
+    background: 'var(--bg3)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm)',
+    padding: '12px 14px',
+    fontSize: '14px',
+    color: 'var(--text)',
+    outline: 'none',
+    fontFamily: 'inherit',
+  }
+
+  const btnPrimary = {
+    background: 'var(--purple)',
+    color: 'white',
+    border: 'none',
+    borderRadius: 'var(--radius-sm)',
+    padding: '12px 24px',
+    fontSize: '14px',
+    fontWeight: 500,
+    cursor: 'pointer',
+    width: '100%',
+  }
+
+  return (
+    <main style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', background: 'var(--bg)' }}>
+      {/* Progress bar */}
+      <div style={{ maxWidth: '560px', width: '100%', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+          <span style={{ fontSize: '13px', color: 'var(--text2)' }}>Étape {step} / 3</span>
+          <span style={{ fontSize: '13px', color: 'var(--text2)' }}>{Math.round((step/3)*100)}%</span>
+        </div>
+        <div style={{ height: '3px', background: 'var(--border)', borderRadius: '2px', overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${(step/3)*100}%`, background: 'var(--purple)', borderRadius: '2px', transition: 'width 0.4s ease' }} />
+        </div>
+      </div>
+
+      <div style={cardStyle}>
+        {/* Step 1: Profile */}
+        {step === 1 && (
+          <div>
+            <h2 style={{ fontSize: '22px', fontWeight: 600, marginBottom: '8px' }}>Votre profil influenceur</h2>
+            <p style={{ color: 'var(--text2)', fontSize: '14px', marginBottom: '28px' }}>L&apos;IA va apprendre qui vous êtes pour vous ressembler parfaitement.</p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div>
+                <label style={{ fontSize: '13px', color: 'var(--text2)', display: 'block', marginBottom: '6px' }}>Votre prénom / nom d&apos;influenceur</label>
+                <input style={inputStyle} value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Sophie Laurent" />
+              </div>
+              <div>
+                <label style={{ fontSize: '13px', color: 'var(--text2)', display: 'block', marginBottom: '6px' }}>Votre pseudo principal</label>
+                <input style={inputStyle} value={handle} onChange={e => setHandle(e.target.value)} placeholder="@sophielaurent" />
+              </div>
+              <div>
+                <label style={{ fontSize: '13px', color: 'var(--text2)', display: 'block', marginBottom: '6px' }}>Votre niche / thématique</label>
+                <input style={inputStyle} value={niche} onChange={e => setNiche(e.target.value)} placeholder="Ex: Lifestyle, fitness, beauté, cuisine, voyage..." />
+              </div>
+              <div>
+                <label style={{ fontSize: '13px', color: 'var(--text2)', display: 'block', marginBottom: '6px' }}>Décrivez votre style en quelques mots</label>
+                <textarea
+                  style={{ ...inputStyle, height: '90px', resize: 'none', lineHeight: 1.6 }}
+                  value={bio}
+                  onChange={e => setBio(e.target.value)}
+                  placeholder="Ex: Je suis une maman active de 28 ans qui partage sa vie saine, mes recettes et mes astuces beauté. Ma communauté est proche et fidèle..."
+                />
+              </div>
+            </div>
+
+            <button style={{ ...btnPrimary, marginTop: '24px' }} onClick={() => name && setStep(2)} disabled={!name}>
+              Continuer →
+            </button>
+          </div>
+        )}
+
+        {/* Step 2: Platforms & Tone */}
+        {step === 2 && (
+          <div>
+            <h2 style={{ fontSize: '22px', fontWeight: 600, marginBottom: '8px' }}>Réseaux & style de communication</h2>
+            <p style={{ color: 'var(--text2)', fontSize: '14px', marginBottom: '24px' }}>L&apos;IA adaptera son style à chaque plateforme.</p>
+
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ fontSize: '13px', color: 'var(--text2)', display: 'block', marginBottom: '12px' }}>Vos réseaux actifs</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {platforms.map(p => (
+                  <div
+                    key={p.id}
+                    onClick={() => togglePlatform(p.id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '14px',
+                      padding: '14px 16px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                      border: selectedPlatforms.includes(p.id) ? `1px solid ${p.color}40` : '1px solid var(--border)',
+                      background: selectedPlatforms.includes(p.id) ? `${p.color}10` : 'var(--bg3)',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    <span style={{ fontSize: '22px' }}>{p.icon}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: '14px', fontWeight: 500 }}>{p.label}</div>
+                      <div style={{ fontSize: '12px', color: 'var(--text2)' }}>{p.desc}</div>
+                    </div>
+                    <div style={{
+                      width: '20px', height: '20px', borderRadius: '50%',
+                      border: selectedPlatforms.includes(p.id) ? 'none' : '1px solid var(--border2)',
+                      background: selectedPlatforms.includes(p.id) ? 'var(--green)' : 'transparent',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px'
+                    }}>
+                      {selectedPlatforms.includes(p.id) && '✓'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ fontSize: '13px', color: 'var(--text2)', display: 'block', marginBottom: '12px' }}>Votre ton de communication</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {tones.map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setSelectedTone(t)}
+                    style={{
+                      padding: '8px 14px', borderRadius: '20px', fontSize: '13px', cursor: 'pointer',
+                      border: selectedTone === t ? '1px solid var(--purple)' : '1px solid var(--border)',
+                      background: selectedTone === t ? 'var(--purple-bg)' : 'transparent',
+                      color: selectedTone === t ? 'var(--purple2)' : 'var(--text2)',
+                    }}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button style={{ ...btnPrimary, background: 'var(--bg3)', color: 'var(--text2)', border: '1px solid var(--border)' }} onClick={() => setStep(1)}>← Retour</button>
+              <button style={btnPrimary} onClick={() => selectedPlatforms.length > 0 && setStep(3)} disabled={selectedPlatforms.length === 0}>Continuer →</button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: API Key */}
+        {step === 3 && (
+          <div>
+            <h2 style={{ fontSize: '22px', fontWeight: 600, marginBottom: '8px' }}>Clé API Anthropic</h2>
+            <p style={{ color: 'var(--text2)', fontSize: '14px', marginBottom: '24px' }}>
+              L&apos;IA utilise Claude pour générer les réponses. Vous avez besoin d&apos;une clé API gratuite.
+            </p>
+
+            <div style={{ background: 'var(--purple-bg)', border: '1px solid var(--purple-border)', borderRadius: 'var(--radius-sm)', padding: '16px', marginBottom: '20px', fontSize: '13px', color: 'var(--text2)', lineHeight: 1.7 }}>
+              <strong style={{ color: 'var(--purple2)' }}>Comment obtenir votre clé :</strong><br />
+              1. Allez sur <a href="https://console.anthropic.com" target="_blank" style={{ color: 'var(--purple2)' }}>console.anthropic.com</a><br />
+              2. Créez un compte gratuit<br />
+              3. Cliquez sur &quot;API Keys&quot; → &quot;Create Key&quot;<br />
+              4. Copiez-collez la clé ici
+            </div>
+
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ fontSize: '13px', color: 'var(--text2)', display: 'block', marginBottom: '6px' }}>Votre clé API Anthropic</label>
+              <input
+                style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '13px' }}
+                type="password"
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder="sk-ant-api03-..."
+              />
+            </div>
+
+            <div style={{ background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '12px 14px', marginBottom: '20px', fontSize: '12px', color: 'var(--text3)' }}>
+              🔒 Votre clé est stockée uniquement dans votre navigateur. Elle n&apos;est jamais envoyée sur un serveur tiers.
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button style={{ ...btnPrimary, background: 'var(--bg3)', color: 'var(--text2)', border: '1px solid var(--border)' }} onClick={() => setStep(2)}>← Retour</button>
+              <button style={{ ...btnPrimary, opacity: saving ? 0.7 : 1 }} onClick={finish} disabled={!apiKey || saving}>
+                {saving ? 'Configuration...' : '🚀 Lancer mon IA →'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </main>
+  )
+}
+s spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  )
+} * { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0a0f;
+  --bg2: #111118;
+  --bg3: #1a1a26;
+  --border: rgba(255,255,255,0.08);
+  --border2: rgba(255,255,255,0.14);
+  --text: #f0f0f8;
+  --text2: #9090a8;
+  --text3: #606078;
+  --purple: #7c6fe0;
+  --purple2: #9d93e8;
+  --purple-bg: rgba(124,111,224,0.12);
+  --purple-border: rgba(124,111,224,0.3);
+  --green: #34d399;
+  --green-bg: rgba(52,211,153,0.1);
+  --red: #f87171;
+  --red-bg: rgba(248,113,113,0.1);
+  --yellow: #fbbf24;
+  --yellow-bg: rgba(251,191,36,0.1);
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* Scrollbar */import type { Metadata } from 'next'
+import './globals.css'
+
+export const metadata: Metadata = {
+  title: 'InfluAI — Manager IA pour Influenceurs',
+  description: 'L\'IA qui gère vos réseaux sociaux à votre place',
+}
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="fr">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+      </head>
+      <body>{children}</body>
+    </html>/** @type {import('next').NextConfig} */
+const nextConfig = {
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+}
+module.exports = nextConfig
+
+  )
+}
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/basic-features/typescript for more information.{
+  "name": "influai2",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
+    "next": "^14.2.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "25.6.0",
+    "@types/react": "19.2.14"
+  }
+}{
+  "name": "influai2",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
+    "next": "^14.2.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "25.6.0",
+    "@types/react": "19.2.14"
+  }
+}
+{
+  "name": "influai2",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "influai2",
+      "version": "1.0.0",
+      "license": "ISC",
+      "dependencies": {
+        "@anthropic-ai/sdk": "^0.91.1",
+        "next": "^14.2.3",
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1"
+      },
+      "devDependencies": {
+        "@types/node": "25.6.0",
+        "@types/react": "19.2.14"
+      }
+    },
+    "node_modules/@anthropic-ai/sdk": {
+      "version": "0.91.1",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.91.1.tgz",
+      "integrity": "sha512-LAmu761tSN9r66ixvmciswUj/ZC+1Q4iAfpedTfSVLeswRwnY3n2Nb6Tsk+cLPP28aLOPWeMgIuTuCcMC6W/iw==",
+      "license": "MIT",
+      "dependencies": {
+        "json-schema-to-ts": "^3.1.1"
+      },
+      "bin": {
+        "anthropic-ai-sdk": "bin/cli"
+      },
+      "peerDependencies": {
+        "zod": "^3.25.0 || ^4.0.0"
+      },
+      "peerDependenciesMeta": {
+        "zod": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/@babel/runtime": {
+      "version": "7.29.2",
+      "resolved": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.2.tgz",
+      "integrity": "sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@next/env": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/env/-/env-14.2.3.tgz",
+      "integrity": "sha512-W7fd7IbkfmeeY2gXrzJYDx8D2lWKbVoTIj1o1ScPHNzvp30s1AuoEFSdr39bC5sjxJaxTtq3OTCZboNp0lNWHA==",
+      "license": "MIT"
+    },
+    "node_modules/@next/swc-darwin-arm64": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-14.2.3.tgz",
+      "integrity": "sha512-3pEYo/RaGqPP0YzwnlmPN2puaF2WMLM3apt5jLW2fFdXD9+pqcoTzRk+iZsf8ta7+quAe4Q6Ms0nR0SFGFdS1A==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-darwin-x64": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-14.2.3.tgz",
+      "integrity": "sha512-6adp7waE6P1TYFSXpY366xwsOnEXM+y1kgRpjSRVI2CBDOcbRjsJ67Z6EgKIqWIue52d2q/Mx8g9MszARj8IEA==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-linux-arm64-gnu": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-14.2.3.tgz",
+      "integrity": "sha512-cuzCE/1G0ZSnTAHJPUT1rPgQx1w5tzSX7POXSLaS7w2nIUJUD+e25QoXD/hMfxbsT9rslEXugWypJMILBj/QsA==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-linux-arm64-musl": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-14.2.3.tgz",
+      "integrity": "sha512-0D4/oMM2Y9Ta3nGuCcQN8jjJjmDPYpHX9OJzqk42NZGJocU2MqhBq5tWkJrUQOQY9N+In9xOdymzapM09GeiZw==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-linux-x64-gnu": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-14.2.3.tgz",
+      "integrity": "sha512-ENPiNnBNDInBLyUU5ii8PMQh+4XLr4pG51tOp6aJ9xqFQ2iRI6IH0Ds2yJkAzNV1CfyagcyzPfROMViS2wOZ9w==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-linux-x64-musl": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-14.2.3.tgz",
+      "integrity": "sha512-BTAbq0LnCbF5MtoM7I/9UeUu/8ZBY0i8SFjUMCbPDOLv+un67e2JgyN4pmgfXBwy/I+RHu8q+k+MCkDN6P9ViQ==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-win32-arm64-msvc": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-14.2.3.tgz",
+      "integrity": "sha512-AEHIw/dhAMLNFJFJIJIyOFDzrzI5bAjI9J26gbO5xhAKHYTZ9Or04BesFPXiAYXDNdrwTP2dQceYA4dL1geu8A==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-win32-ia32-msvc": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-ia32-msvc/-/swc-win32-ia32-msvc-14.2.3.tgz",
+      "integrity": "sha512-vga40n1q6aYb0CLrM+eEmisfKCR45ixQYXuBXxOOmmoV8sYST9k7E3US32FsY+CkkF7NtzdcebiFT4CHuMSyZw==",
+      "cpu": [
+        "ia32"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-win32-x64-msvc": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-14.2.3.tgz",
+      "integrity": "sha512-Q1/zm43RWynxrO7lW4ehciQVj+5ePBhOK+/K2P7pLFX3JaJ/IZVC69SHidrmZSOkqz7ECIOhhy7XhAFG4JYyHA==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@swc/counter": {
+      "version": "0.1.3",
+      "resolved": "https://registry.npmjs.org/@swc/counter/-/counter-0.1.3.tgz",
+      "integrity": "sha512-e2BR4lsJkkRlKZ/qCHPw9ZaSxc0MVUd7gtbtaB7aMvHeJVYe8sOB8DBZkP2DtISHGSku9sCK6T6cnY0CtXrOCQ==",
+      "license": "Apache-2.0"
+    },
+    "node_modules/@swc/helpers": {
+      "version": "0.5.5",
+      "resolved": "https://registry.npmjs.org/@swc/helpers/-/helpers-0.5.5.tgz",
+      "integrity": "sha512-KGYxvIOXcceOAbEk4bi/dVLEK9z8sZ0uBB3Il5b1rhfClSpcX0yfRO0KmTkqR2cnQDymwLB+25ZyMzICg/cm/A==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@swc/counter": "^0.1.3",
+        "tslib": "^2.4.0"
+      }
+    },
+    "node_modules/@types/node": {
+      "version": "25.6.0",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-25.6.0.tgz",
+      "integrity": "sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "undici-types": "~7.19.0"
+      }
+    },
+    "node_modules/@types/react": {
+      "version": "19.2.14",
+      "resolved": "https://registry.npmjs.org/@types/react/-/react-19.2.14.tgz",
+      "integrity": "sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "csstype": "^3.2.2"
+      }
+    },
+    "node_modules/busboy": {
+      "version": "1.6.0",
+      "resolved": "https://registry.npmjs.org/busboy/-/busboy-1.6.0.tgz",
+      "integrity": "sha512-8SFQbg/0hQ9xy3UNTB0YEnsNBbWfhf7RtnzpL7TkBiTBRfrQ9Fxcnz7VJsleJpyp6rVLvXiuORqjlHi5q+PYuA==",
+      "dependencies": {
+        "streamsearch": "^1.1.0"
+      },
+      "engines": {
+        "node": ">=10.16.0"
+      }
+    },
+    "node_modules/caniuse-lite": {
+      "version": "1.0.30001791",
+      "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001791.tgz",
+      "integrity": "sha512-yk0l/YSrOnFZk3UROpDLQD9+kC1l4meK/wed583AXrzoarMGJcbRi2Q4RaUYbKxYAsZ8sWmaSa/DsLmdBeI1vQ==",
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/browserslist"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/caniuse-lite"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "CC-BY-4.0"
+    },
+    "node_modules/client-only": {
+      "version": "0.0.1",
+      "resolved": "https://registry.npmjs.org/client-only/-/client-only-0.0.1.tgz",
+      "integrity": "sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==",
+      "license": "MIT"
+    },
+    "node_modules/csstype": {
+      "version": "3.2.3",
+      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/graceful-fs": {
+      "version": "4.2.11",
+      "resolved": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
+      "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
+      "license": "ISC"
+    },
+    "node_modules/js-tokens": {
+      "version": "4.0.0",
+      "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz",
+      "integrity": "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==",
+      "license": "MIT"
+    },
+    "node_modules/json-schema-to-ts": {
+      "version": "3.1.1",
+      "resolved": "https://registry.npmjs.org/json-schema-to-ts/-/json-schema-to-ts-3.1.1.tgz",
+      "integrity": "sha512-+DWg8jCJG2TEnpy7kOm/7/AxaYoaRbjVB4LFZLySZlWn8exGs3A4OLJR966cVvU26N7X9TWxl+Jsw7dzAqKT6g==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.3",
+        "ts-algebra": "^2.0.0"
+      },
+      "engines": {
+        "node": ">=16"
+      }
+    },
+    "node_modules/loose-envify": {
+      "version": "1.4.0",
+      "resolved": "https://registry.npmjs.org/loose-envify/-/loose-envify-1.4.0.tgz",
+      "integrity": "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==",
+      "license": "MIT",
+      "dependencies": {
+        "js-tokens": "^3.0.0 || ^4.0.0"
+      },
+      "bin": {
+        "loose-envify": "cli.js"
+      }
+    },
+    "node_modules/nanoid": {
+      "version": "3.3.11",
+      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.11.tgz",
+      "integrity": "sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==",
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "bin": {
+        "nanoid": "bin/nanoid.cjs"
+      },
+      "engines": {
+        "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
+      }
+    },
+    "node_modules/next": {
+      "version": "14.2.3",
+      "resolved": "https://registry.npmjs.org/next/-/next-14.2.3.tgz",
+      "integrity": "sha512-dowFkFTR8v79NPJO4QsBUtxv0g9BrS/phluVpMAt2ku7H+cbcBJlopXjkWlwxrk/xGqMemr7JkGPGemPrLLX7A==",
+      "deprecated": "This version has a security vulnerability. Please upgrade to a patched version. See https://nextjs.org/blog/security-update-2025-12-11 for more details.",
+      "license": "MIT",
+      "dependencies": {
+        "@next/env": "14.2.3",
+        "@swc/helpers": "0.5.5",
+        "busboy": "1.6.0",
+        "caniuse-lite": "^1.0.30001579",
+        "graceful-fs": "^4.2.11",
+        "postcss": "8.4.31",
+        "styled-jsx": "5.1.1"
+      },
+      "bin": {
+        "next": "dist/bin/next"
+      },
+      "engines": {
+        "node": ">=18.17.0"
+      },
+      "optionalDependencies": {
+        "@next/swc-darwin-arm64": "14.2.3",
+        "@next/swc-darwin-x64": "14.2.3",
+        "@next/swc-linux-arm64-gnu": "14.2.3",
+        "@next/swc-linux-arm64-musl": "14.2.3",
+        "@next/swc-linux-x64-gnu": "14.2.3",
+        "@next/swc-linux-x64-musl": "14.2.3",
+        "@next/swc-win32-arm64-msvc": "14.2.3",
+        "@next/swc-win32-ia32-msvc": "14.2.3",
+        "@next/swc-win32-x64-msvc": "14.2.3"
+      },
+      "peerDependencies": {
+        "@opentelemetry/api": "^1.1.0",
+        "@playwright/test": "^1.41.2",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "sass": "^1.3.0"
+      },
+      "peerDependenciesMeta": {
+        "@opentelemetry/api": {
+          "optional": true
+        },
+        "@playwright/test": {
+          "optional": true
+        },
+        "sass": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/picocolors": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+      "license": "ISC"
+    },
+    "node_modules/postcss": {
+      "version": "8.4.31",
+      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.4.31.tgz",
+      "integrity": "sha512-PS08Iboia9mts/2ygV3eLpY5ghnUcfLV/EXTOW1E2qYxJKGGBUtNjN76FYHnMs36RmARn41bC0AZmn+rR0OVpQ==",
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/postcss"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "nanoid": "^3.3.6",
+        "picocolors": "^1.0.0",
+        "source-map-js": "^1.0.2"
+      },
+      "engines": {
+        "node": "^10 || ^12 || >=14"
+      }
+    },
+    "node_modules/react": {
+      "version": "18.3.1",
+      "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
+      "integrity": "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0"
+      },
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/react-dom": {
+      "version": "18.3.1",
+      "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-18.3.1.tgz",
+      "integrity": "sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0",
+        "scheduler": "^0.23.2"
+      },
+      "peerDependencies": {
+        "react": "^18.3.1"
+      }
+    },
+    "node_modules/scheduler": {
+      "version": "0.23.2",
+      "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.23.2.tgz",
+      "integrity": "sha512-UOShsPwz7NrMUqhR6t0hWjFduvOzbtv7toDH1/hIrfRNIDBnnBWd0CwJTGvTpngVlmwGCdP9/Zl/tVrDqcuYzQ==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0"
+      }
+    },
+    "node_modules/source-map-js": {
+      "version": "1.2.1",
+      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
+      "license": "BSD-3-Clause",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/streamsearch": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/streamsearch/-/streamsearch-1.1.0.tgz",
+      "integrity": "sha512-Mcc5wHehp9aXz1ax6bZUyY5afg9u2rv5cqQI3mRrYkGC8rW2hM02jWuwjtL++LS5qinSyhj2QfLyNsuc+VsExg==",
+      "engines": {
+        "node": ">=10.0.0"
+      }
+    },
+    "node_modules/styled-jsx": {
+      "version": "5.1.1",
+      "resolved": "https://registry.npmjs.org/styled-jsx/-/styled-jsx-5.1.1.tgz",
+      "integrity": "sha512-pW7uC1l4mBZ8ugbiZrcIsiIvVx1UmTfw7UkC3Um2tmfUq9Bhk8IiyEIPl6F8agHgjzku6j0xQEZbfA5uSgSaCw==",
+      "license": "MIT",
+      "dependencies": {
+        "client-only": "0.0.1"
+      },
+      "engines": {
+        "node": ">= 12.0.0"
+      },
+      "peerDependencies": {
+        "react": ">= 16.8.0 || 17.x.x || ^18.0.0-0"
+      },
+      "peerDependenciesMeta": {
+        "@babel/core": {
+          "optional": true
+        },
+        "babel-plugin-macros": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/ts-algebra": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/ts-algebra/-/ts-algebra-2.0.0.tgz",
+      "integrity": "sha512-FPAhNPFMrkwz76P7cdjdmiShwMynZYN6SgOujD1urY4oNm80Ou9oMdmbR45LotcKOXoy7wSmHkRFE6Mxbrhefw==",
+      "license": "MIT"
+    },
+    "node_modules/tslib": {
+      "version": "2.8.1",
+      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+      "license": "0BSD"
+    },
+    "node_modules/undici-types": {
+      "version": "7.19.2",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-7.19.2.tgz",
+      "integrity": "sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg==",
+      "dev": true,
+      "license": "MIT"
+    }
+  }
+}
+
+
+# InfluAI — Manager IA pour Influenceurs
+
+Agent IA complet pour gérer les réseaux sociaux (Instagram, TikTok, YouTube).
+Propulsé par Claude (Anthropic).
+
+## 🚀 Déploiement sur Vercel (5 minutes)
+
+### Méthode 1 : GitHub + Vercel (recommandée)
+
+1. **Créez un repo GitHub** :
+   - Allez sur github.com → New repository → "influai"
+   - Uploadez tous ces fichiers
+
+2. **Déployez sur Vercel** :
+   - Allez sur vercel.com → "Add New Project"
+   - Importez votre repo GitHub
+   - Cliquez "Deploy" → Votre lien est prêt ! 🎉
+
+3. **Partagez le lien** avec vos clients :
+   - Exemple : `https://influai-votreprenom.vercel.app`
+   - Chaque client entre sa propre clé API Anthropic
+
+### Méthode 2 : Vercel CLI
+
+```bash
+npm i -g vercel
+vercel
+```
+
+## 🔑 Clé API pour vos clients
+
+Chaque client a besoin de sa propre clé API Anthropic :
+- Gratuit pour commencer : console.anthropic.com
+- ~$5-15/mois pour un usage intensif
+
+## 📱 Fonctionnalités
+
+- ✉ **Boîte de réception** : Lit et répond aux DMs/commentaires avec l'IA
+- ✦ **Créateur de contenu** : Génère posts, légendes, descriptions
+- ⚙ **Automatisation** : Règles pour réponses auto, filtrage spam
+- ◈ **Statistiques** : Suivi de l'activité de l'agent
+
+## 🔒 Sécurité
+
+La clé API est stockée dans le navigateur du client (localStorage).
+Elle n'est jamais envoyée sur un serveur tiers.
+{
+  "compilerOptions": {
+    "target": "es5",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"{
+  "version": 2,
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install"
+}
+
+  ]
+}
